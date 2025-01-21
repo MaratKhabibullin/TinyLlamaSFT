@@ -4,6 +4,7 @@ from transformers import pipeline
 from peft import AutoPeftModelForCausalLM
 from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
+from peft import LoraConfig, get_peft_model
 import argparse
 
 
@@ -15,7 +16,7 @@ def train(resultName, datasetSize):
     assert len(resultName) > 0, "There is an empty string for model name."
     assert datasetSize > 0, "Dataset size must be positive number."
 
-    # Load a tokenizer to use its chat template
+    # load a tokenizer to use its chat template
     template_tokenizer = AutoTokenizer.from_pretrained(
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     )
@@ -28,30 +29,28 @@ def train(resultName, datasetSize):
 
         return {"text": prompt}
 
-    # Load and format the data using the template TinyLLama is using
+    # load and format the data using the template TinyLLama is using
     dataset = (
         load_dataset("HuggingFaceH4/ultrachat_200k", split="test_sft")
         .shuffle(seed=42)
         .select(range(datasetSize))
     )
     dataset = dataset.map(format_prompt)
+    # prevent trainer to apply chat templates on messages field
     dataset = dataset.remove_columns(["messages"])
 
+    # pretrained model
     model_name = "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
 
-    # Load the model to train on the GPU
     model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
     model.config.use_cache = False
     model.config.pretraining_tp = 1
 
-    # Load LLaMA tokenizer
+    # load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     tokenizer.pad_token = "<PAD>"
     tokenizer.padding_side = "left"
 
-    from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
-
-    # Prepare LoRA Configuration
     peft_config = LoraConfig(
         lora_alpha=32,  # LoRA Scaling
         lora_dropout=0.1,  # Dropout for LoRA Layers
@@ -107,7 +106,7 @@ def doInference(loraWeightsName, promtText):
     Runs finetuned network on user prompt.
     """
 
-    # Load a tokenizer to use its chat template
+    # load a tokenizer to use its chat template
     template_tokenizer = AutoTokenizer.from_pretrained(
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     )
@@ -146,7 +145,6 @@ def main():
         description="Script for training or inference of a model."
     )
 
-    # General argument for operation mode
     parser.add_argument(
         "--mode",
         choices=["training", "inference"],
@@ -154,7 +152,6 @@ def main():
         help="Mode of operation: 'training' or 'inference'.",
     )
 
-    # General argument for model name
     parser.add_argument(
         "--model_name",
         type=str,
@@ -163,7 +160,6 @@ def main():
         default="TinyLlama-1.1B-lora",
     )
 
-    # Argument for training dataset size, only required if mode is 'training'
     parser.add_argument(
         "--dataset_size",
         type=int,

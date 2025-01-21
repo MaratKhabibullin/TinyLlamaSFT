@@ -21,9 +21,8 @@
 			"python": {
 				"file": "main.py",
 				"args": [ 
-					"--model_name", "test",
-				 	"--mode", "training",
-					"--dataset_size", "10"
+					"--model_name", "TinyLlama-1.1B-lora",
+				 	"--mode", "inference"
 				],
 			},
 			"dockerRun": {
