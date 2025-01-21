@@ -1,5 +1,5 @@
 # For more information, please refer to https://aka.ms/vscode-docker-python
-FROM pytorch/pytorch:latest
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 # Keeps Python from generating .pyc files in the container
 ENV PYTHONDONTWRITEBYTECODE=1

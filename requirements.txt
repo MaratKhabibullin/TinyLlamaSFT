@@ -1,5 +1,4 @@
-# To ensure app dependencies are ported from your virtual environment/host machine into your container, run 'pip freeze > requirements.txt' in the terminal to overwrite this file
-transformers 
-datasets 
-peft 
-trl
+transformers==4.48.1
+datasets==3.2.0
+peft==0.14.0
+trl==0.13.0
