@@ -1,6 +1,14 @@
-def mainFunc() :
-    from transformers import AutoTokenizer
-    from datasets import load_dataset
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import pipeline
+from peft import AutoPeftModelForCausalLM
+from datasets import load_dataset
+from trl import SFTTrainer, SFTConfig
+import argparse
+
+def train( resultName, datasetSize ) :
+    assert len(resultName) > 0, "There is an empty string for model name."
+    assert datasetSize > 0, "Dataset size must be positive number."
 
     # Load a tokenizer to use its chat template
     template_tokenizer = AutoTokenizer.from_pretrained(
@@ -10,7 +18,6 @@ def mainFunc() :
     def format_prompt(example):
         """Format the prompt to using the <|user|> template TinyLLama is using"""
 
-        # Format answers
         chat = example["messages"]
         prompt = template_tokenizer.apply_chat_template(chat, tokenize=False)
 
@@ -20,31 +27,17 @@ def mainFunc() :
     dataset = (
         load_dataset("HuggingFaceH4/ultrachat_200k", split="test_sft")
         .shuffle(seed=42)
-        .select(range(1000))
+        .select(range(datasetSize))
     )
     dataset = dataset.map(format_prompt)
     dataset = dataset.remove_columns( ['messages'] )
 
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer#, BitsAndBytesConfig
-
     model_name = "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
-
-    # 4-bit quantization configuration - Q in QLoRA
-    # bnb_config = BitsAndBytesConfig(
-    #     load_in_4bit=True,  # Use 4-bit precision model loading
-    #     bnb_4bit_quant_type="nf4",  # Quantization type
-    #     bnb_4bit_compute_dtype="float16",  # Compute dtype
-    #     bnb_4bit_use_double_quant=False,  # Apply nested quantization
-    # )
 
     # Load the model to train on the GPU
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        device_map="cpu",
-
-        # Leave this out for regular SFT
-        #quantization_config=bnb_config,
+        device_map="auto"
     )
     model.config.use_cache = False
     model.config.pretraining_tp = 1
@@ -53,7 +46,6 @@ def mainFunc() :
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     tokenizer.pad_token = "<PAD>"
     tokenizer.padding_side = "left"
-    #tokenizer.chat_template = template_tokenizer.chat_template
 
     from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 
@@ -68,12 +60,8 @@ def mainFunc() :
         ["k_proj", "gate_proj", "v_proj", "up_proj", "q_proj", "o_proj", "down_proj"]
     )
 
-    # Prepare model for training
-    #model = prepare_model_for_kbit_training(model)
     model.enable_input_require_grads()
     model = get_peft_model(model, peft_config)
-
-    from trl import SFTTrainer, SFTConfig
 
     output_dir = "./results"
 
@@ -89,48 +77,24 @@ def mainFunc() :
             fp16=False,
             gradient_checkpointing=True,
             max_seq_length=512,
-            
-            #warmup_steps = 5,
-            # num_train_epochs = 1, # Set this for 1 full training run.
-            # #max_steps = 60,
-            # fp16 = not is_bfloat16_supported(),
-            # bf16 = is_bfloat16_supported(),
-            # optim = "adamw_8bit",
-            # weight_decay = 0.01,
-            # lr_scheduler_type = "linear",
-            # seed = 3407,
-            # report_to = "none",
-            # max_seq_length = 2048,
-            # dataset_num_proc = 4,
-            # packing = False, # Can make training 5x faster for short sequences.
         )
 
-    # Set supervised fine-tuning parameters
     trainer = SFTTrainer(
         model=model,
         train_dataset=dataset,
-        #dataset_text_field="text",
-        tokenizer=tokenizer,
-    # args=training_arguments,
-        
-
-        # Leave this out for regular SFT
+        tokenizer=tokenizer,       
         peft_config=peft_config,
-
         args = args
     )
 
-    # Train model
     trainer.train()
 
-    # Save QLoRA weights
-    trainer.model.save_pretrained("/cache/results/TinyLlama-1.1B-lora")
+    # save lora weights
+    trainer.model.save_pretrained(f"/cache/results/{resultName}")
 
-def testModel() :
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+def doInference( loraWeightsName, promtText ) :
 
-  # Load a tokenizer to use its chat template
+    # Load a tokenizer to use its chat template
     template_tokenizer = AutoTokenizer.from_pretrained(
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     )
@@ -142,71 +106,79 @@ def testModel() :
 
     tokenizer.chat_template = template_tokenizer.chat_template
 
-    from peft import AutoPeftModelForCausalLM
-
     model = AutoPeftModelForCausalLM.from_pretrained(
-        "/cache/results/TinyLlama-1.1B-lora",
+        f"/cache/results/{loraWeightsName}",
         low_cpu_mem_usage=True,
-        device_map="cpu",
+        device_map="auto",
     )
 
-    # Merge LoRA and base model
+    # merge lora weights
     merged_model = model.merge_and_unload()
 
-    from transformers import pipeline
+    prompt = [{"role": "user", "content": promtText}]
 
-    # Use our predefined prompt template
-    prompt = [{"role": "user", "content": "как дела?"}]
-    #prompt = r'<|user|>\nWhat is ocean? Answer using 5 words.</s>\n<|assistant|>\n'
-    #prompt = "<|user|> What is ocean? Answer using 5 words.</s><|assistant|>"
-
-    # Run our instruction-tuned model
     pipe = pipeline(task="text-generation", model=merged_model, tokenizer=tokenizer, max_length=512, truncation=True)
-    result = pipe(prompt)[0]["generated_text"]
 
-    print( result )
+    print( pipe(prompt)[0]["generated_text"] )
 
 
-def testModelOld() :
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-  # Load a tokenizer to use its chat template
-    template_tokenizer = AutoTokenizer.from_pretrained(
-        "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+def main():
+    parser = argparse.ArgumentParser(description="Script for training or inference of a model.")
+
+    # General argument for operation mode
+    parser.add_argument(
+        '--mode', 
+        choices=['training', 'inference'], 
+        required=True, 
+        help="Mode of operation: 'training' or 'inference'."
     )
 
-    model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    tokenizer.pad_token = "<PAD>"
-    tokenizer.padding_side = "left"
-
-    tokenizer.chat_template = template_tokenizer.chat_template
-
-    from peft import AutoPeftModelForCausalLM
-
-    model = AutoModelForCausalLM.from_pretrained(
-        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        low_cpu_mem_usage=True,
-        device_map="cpu",
+    # General argument for model name
+    parser.add_argument(
+        '--model_name', 
+        type=str, 
+        required=True, 
+        help="Name of the model to use.",
+        default="TinyLlama-1.1B-lora"
     )
 
-    # Merge LoRA and base model
-    merged_model = model
+    # Argument for training dataset size, only required if mode is 'training'
+    parser.add_argument(
+        '--dataset_size', 
+        type=int, 
+        required=False, 
+        help="Size of the training dataset (required if mode is 'training')."
+    )
 
-    from transformers import pipeline
+    parser.add_argument(
+        '--prompt', 
+        type=str, 
+        required=False, 
+        default="Write joke about a chicken.",
+        help="Promt for inference (required if mode is 'inference')."
+    )
 
-    # Use our predefined prompt template
-    prompt = [{"role": "user", "content": "Tell me something abount LLM."}]
-    #prompt = r'<|user|>\nWhat is ocean? Answer using 5 words.</s>\n<|assistant|>\n'
-    #prompt = "<|user|> What is ocean? Answer using 5 words.</s><|assistant|>"
+    args = parser.parse_args()
 
-    # Run our instruction-tuned model
-    pipe = pipeline(task="text-generation", model=merged_model, tokenizer=tokenizer, max_length=64, truncation=True)
-    result = pipe(prompt)[0]["generated_text"]
+    if args.dataset_size is not None and args.dataset_size <= 0:
+        parser.error("--dataset_size must be a positive number if specified.")
 
-    print( result )
+    if args.mode == 'inference' and len(args.prompt) == 0:
+        parser.error("--prompt must be set if inference mode used.")
 
-if __name__=="__main__":
-    #mainFunc()
-    testModel()
+    if args.mode == 'training':
+        if args.dataset_size is None:
+            parser.error("--dataset_size is required when mode is 'training'.")
+        print(f"Training mode selected.")
+        print(f"Model: {args.model_name}")
+        print(f"Dataset size: {args.dataset_size}")
+        train( args.model_name, args.dataset_size )
+    elif args.mode == 'inference':
+        print(f"Inference mode selected.")
+        print(f"Model: {args.model_name}")
+        print(f"Prompt: {args.prompt}")
+        doInference( args.model_name, args.prompt )
+
+if __name__ == "__main__":
+    main()
