@@ -6,7 +6,12 @@ from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
 import argparse
 
-def train( resultName, datasetSize ) :
+
+def train(resultName, datasetSize):
+    """
+    Finetunes tinyllama on HuggingFaceH4/ultrachat_200k dataset using lora.
+    """
+
     assert len(resultName) > 0, "There is an empty string for model name."
     assert datasetSize > 0, "Dataset size must be positive number."
 
@@ -30,15 +35,12 @@ def train( resultName, datasetSize ) :
         .select(range(datasetSize))
     )
     dataset = dataset.map(format_prompt)
-    dataset = dataset.remove_columns( ['messages'] )
+    dataset = dataset.remove_columns(["messages"])
 
     model_name = "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
 
     # Load the model to train on the GPU
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="auto"
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
     model.config.use_cache = False
     model.config.pretraining_tp = 1
 
@@ -56,8 +58,15 @@ def train( resultName, datasetSize ) :
         r=64,  # Rank
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=  # Layers to target
-        ["k_proj", "gate_proj", "v_proj", "up_proj", "q_proj", "o_proj", "down_proj"]
+        target_modules=[  # Layers to target
+            "k_proj",
+            "gate_proj",
+            "v_proj",
+            "up_proj",
+            "q_proj",
+            "o_proj",
+            "down_proj",
+        ],
     )
 
     model.enable_input_require_grads()
@@ -66,25 +75,25 @@ def train( resultName, datasetSize ) :
     output_dir = "./results"
 
     args = SFTConfig(
-            output_dir = output_dir,
-            per_device_train_batch_size=2,
-            gradient_accumulation_steps=4,
-            optim="adamw_torch",
-            learning_rate = 2e-4,
-            lr_scheduler_type="cosine",
-            num_train_epochs=1,
-            logging_steps=10,
-            fp16=False,
-            gradient_checkpointing=True,
-            max_seq_length=512,
-        )
+        output_dir=output_dir,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        optim="adamw_torch",
+        learning_rate=2e-4,
+        lr_scheduler_type="cosine",
+        num_train_epochs=1,
+        logging_steps=10,
+        fp16=False,
+        gradient_checkpointing=True,
+        max_seq_length=512,
+    )
 
     trainer = SFTTrainer(
         model=model,
         train_dataset=dataset,
-        tokenizer=tokenizer,       
+        tokenizer=tokenizer,
         peft_config=peft_config,
-        args = args
+        args=args,
     )
 
     trainer.train()
@@ -92,7 +101,11 @@ def train( resultName, datasetSize ) :
     # save lora weights
     trainer.model.save_pretrained(f"/cache/results/{resultName}")
 
-def doInference( loraWeightsName, promtText ) :
+
+def doInference(loraWeightsName, promtText):
+    """
+    Runs finetuned network on user prompt.
+    """
 
     # Load a tokenizer to use its chat template
     template_tokenizer = AutoTokenizer.from_pretrained(
@@ -117,46 +130,53 @@ def doInference( loraWeightsName, promtText ) :
 
     prompt = [{"role": "user", "content": promtText}]
 
-    pipe = pipeline(task="text-generation", model=merged_model, tokenizer=tokenizer, max_length=512, truncation=True)
+    pipe = pipeline(
+        task="text-generation",
+        model=merged_model,
+        tokenizer=tokenizer,
+        max_length=512,
+        truncation=True,
+    )
 
-    print( pipe(prompt)[0]["generated_text"] )
-
+    print(pipe(prompt)[0]["generated_text"])
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Script for training or inference of a model.")
+    parser = argparse.ArgumentParser(
+        description="Script for training or inference of a model."
+    )
 
     # General argument for operation mode
     parser.add_argument(
-        '--mode', 
-        choices=['training', 'inference'], 
-        required=True, 
-        help="Mode of operation: 'training' or 'inference'."
+        "--mode",
+        choices=["training", "inference"],
+        required=True,
+        help="Mode of operation: 'training' or 'inference'.",
     )
 
     # General argument for model name
     parser.add_argument(
-        '--model_name', 
-        type=str, 
-        required=True, 
+        "--model_name",
+        type=str,
+        required=True,
         help="Name of the model to use.",
-        default="TinyLlama-1.1B-lora"
+        default="TinyLlama-1.1B-lora",
     )
 
     # Argument for training dataset size, only required if mode is 'training'
     parser.add_argument(
-        '--dataset_size', 
-        type=int, 
-        required=False, 
-        help="Size of the training dataset (required if mode is 'training')."
+        "--dataset_size",
+        type=int,
+        required=False,
+        help="Size of the training dataset (required if mode is 'training').",
     )
 
     parser.add_argument(
-        '--prompt', 
-        type=str, 
-        required=False, 
+        "--prompt",
+        type=str,
+        required=False,
         default="Write joke about a chicken.",
-        help="Promt for inference (required if mode is 'inference')."
+        help="Promt for inference (required if mode is 'inference').",
     )
 
     args = parser.parse_args()
@@ -164,21 +184,22 @@ def main():
     if args.dataset_size is not None and args.dataset_size <= 0:
         parser.error("--dataset_size must be a positive number if specified.")
 
-    if args.mode == 'inference' and len(args.prompt) == 0:
+    if args.mode == "inference" and len(args.prompt) == 0:
         parser.error("--prompt must be set if inference mode used.")
 
-    if args.mode == 'training':
+    if args.mode == "training":
         if args.dataset_size is None:
             parser.error("--dataset_size is required when mode is 'training'.")
         print(f"Training mode selected.")
         print(f"Model: {args.model_name}")
         print(f"Dataset size: {args.dataset_size}")
-        train( args.model_name, args.dataset_size )
-    elif args.mode == 'inference':
+        train(args.model_name, args.dataset_size)
+    elif args.mode == "inference":
         print(f"Inference mode selected.")
         print(f"Model: {args.model_name}")
         print(f"Prompt: {args.prompt}")
-        doInference( args.model_name, args.prompt )
+        doInference(args.model_name, args.prompt)
+
 
 if __name__ == "__main__":
     main()
